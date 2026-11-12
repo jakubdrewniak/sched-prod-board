@@ -9,3 +9,10 @@ h1 { margin: 0; font-size: 22px; }
 .row.sev2 .sev { color: #a15c00; }
 .row time { color: #555; font-variant-numeric: tabular-nums; }
 footer { color: #777; font-size: 13px; }
+.loader, .empty { color: #666; padding: 12px; }
+.loader::before { content: ''; display: inline-block; width: 12px; height: 12px; margin-right: 8px; border: 2px solid #bbb; border-top-color: #333; border-radius: 50%; vertical-align: -2px; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.ack { font: inherit; padding: 4px 14px; border: 1px solid #888; border-radius: 4px; background: #fff; cursor: pointer; }
+.ack:disabled { opacity: .5; cursor: default; }
+.acked { color: #1a7f37; font-weight: 600; }
+.row.is-acked { background: #f3faf4; }
