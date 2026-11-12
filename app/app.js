@@ -20,22 +20,19 @@ const fmt = new Intl.DateTimeFormat(navigator.languages?.length ? navigator.lang
 const localTime = (iso) => fmt.format(new Date(iso));
 
 function rowHtml(i) {
-  const isAcked = acked.has(i.id);
-  const action = isAcked
-    ? `<span data-testid="acked" class="acked">acked</span>`
-    : `<button type="button" data-testid="ack" class="ack"${pending.has(i.id) ? ' disabled' : ''}>Ack</button>`;
+  const mark = acked.has(i.id) ? `<span data-testid="acked" class="acked">acked</span>` : '<span class="open" aria-hidden="true">›</span>';
   return `<span class="id">${esc(i.id)}</span>
     <span class="sev">${esc(i.severity)}</span>
     <span class="what">${esc(i.service)} · ${esc(i.region)} · ${esc(i.summary)}</span>
     <time datetime="${esc(i.openedAt)}" title="${esc(i.openedAt)}">${esc(localTime(i.openedAt))}</time>
-    ${action}`;
+    ${mark}`;
 }
 
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
-// R1: render newest first, keyed by id, so existing rows (and a button under the pointer) are reused, not rebuilt.
+// R1: render newest first, keyed by id: existing rows are reused, never removed and rebuilt; new ones go on top.
 function render(incidents) {
   const seen = new Set();
   let prev = null;
@@ -47,8 +44,11 @@ function render(incidents) {
       li = document.createElement('li');
       li.dataset.testid = 'incident-row';
       li.dataset.id = i.id;
+      li.tabIndex = 0;
+      li.setAttribute('role', 'button');
     }
-    li.className = `row ${i.severity}${acked.has(i.id) ? ' is-acked' : ''}`;
+    li.className = `row ${i.severity}${acked.has(i.id) ? ' is-acked' : ''}${i.id === panelId ? ' is-open' : ''}`;
+    li.setAttribute('aria-label', `Open ${i.id}`);
     if (li._html !== html) {
       li.innerHTML = html;
       li._html = html;
@@ -59,15 +59,65 @@ function render(incidents) {
   }
   for (const li of [...list.children]) if (!seen.has(li.dataset.id)) li.remove();
   empty.hidden = incidents.length > 0;
+  if (panelId) renderPanel();
 }
 
-// R2: Ack the incident whose row holds the clicked button.
-list.addEventListener('click', async (e) => {
-  const btn = e.target.closest('[data-testid="ack"]');
-  if (!btn) return;
-  const id = btn.closest('[data-testid="incident-row"]').dataset.id;
+// R2 (product, after the 00:10 ack race): Ack leaves the row. A row opens its incident panel, and Ack lives
+// there. The panel is bound to the incident id it was opened for, so rows moving under the pointer can only
+// open the wrong panel (which names its incident), never ack the wrong incident.
+const panel = document.querySelector('[data-testid="incident-panel"]');
+let panelId = null;
+
+function renderPanel() {
+  const i = byId.get(panelId);
+  if (!panelId || !i) {
+    panel.hidden = true;
+    return;
+  }
+  const html = `<h2 class="panel-id">${esc(i.id)}</h2>
+    <p class="panel-sev ${esc(i.severity)}">${esc(i.severity)} · ${esc(i.service)} · ${esc(i.region)}</p>
+    <p class="panel-what">${esc(i.summary)}</p>
+    <p class="panel-time">opened <time></time></p>
+    ${acked.has(i.id)
+      ? `<p data-testid="acked" class="acked">acked</p>`
+      : `<button type="button" data-testid="panel-ack" class="ack"${pending.has(i.id) ? ' disabled' : ''}>Ack ${esc(i.id)}</button>`}
+    <button type="button" class="close" aria-label="Close panel">×</button>`;
+  panel.dataset.id = i.id;
+  if (panel._html !== html) {
+    panel.innerHTML = html;
+    panel._html = html;
+  }
+  const t = panel.querySelector('time');
+  t.dateTime = i.openedAt;
+  t.textContent = localTime(i.openedAt);
+  panel.hidden = false;
+}
+
+function openPanel(id) {
+  panelId = id;
+  for (const li of list.children) li.classList.toggle('is-open', li.dataset.id === id);
+  renderPanel();
+}
+
+list.addEventListener('click', (e) => {
+  const li = e.target.closest('[data-testid="incident-row"]');
+  if (li) openPanel(li.dataset.id);
+});
+list.addEventListener('keydown', (e) => {
+  const li = e.target.closest('[data-testid="incident-row"]');
+  if (li && (e.key === 'Enter' || e.key === ' ')) {
+    e.preventDefault();
+    openPanel(li.dataset.id);
+  }
+});
+
+panel.addEventListener('click', async (e) => {
+  if (e.target.closest('.close')) return openPanel(null);
+  if (!e.target.closest('[data-testid="panel-ack"]')) return;
+  const id = panel.dataset.id; // the incident this panel names, not whatever row is under the pointer now
+  if (pending.has(id) || acked.has(id)) return;
   pending.add(id);
-  btn.disabled = true;
+  renderPanel();
   try {
     const reply = await ack(id);
     acked.set(id, reply.ackedAt);
@@ -76,14 +126,17 @@ list.addEventListener('click', async (e) => {
   } finally {
     pending.delete(id);
     if (last) render(last);
+    renderPanel();
   }
 });
 
+const byId = new Map();
 let last = null;
 async function refresh() {
   try {
     const page = await fetchIncidents();
     last = page.incidents;
+    for (const i of last) byId.set(i.id, i);
     render(last);
     board.dataset.updatedAt = page.updatedAt;
   } catch (err) {
